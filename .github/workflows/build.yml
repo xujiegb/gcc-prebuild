@@ -39,8 +39,7 @@ jobs:
   # ==========================================
   build-gcc:
     needs: create-release
-    # 修改点：当 host 为 arm64 或 riscv64 时，均使用 ubuntu-26.04-arm 运行器编译
-    runs-on: ${{ (matrix.host == 'arm64' || matrix.host == 'riscv64') && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    runs-on: ${{ matrix.host == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' ||  matrix.host == 'riscv64' && 'ubuntu-24.04-riscv' }}
     strategy:
       fail-fast: false
       matrix:
