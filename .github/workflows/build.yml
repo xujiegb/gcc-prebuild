@@ -1,0 +1,214 @@
+name: Build Custom GCC
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release Version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  # ==========================================
+  # 1. 前置任务：安全创建 Release，防止后续并发上传时冲突
+  # ==========================================
+  create-release:
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Create or Check Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.release_version }}
+          name: "Toolchains Kernel 6.12 Glibc 2.39 (${{ github.event.inputs.release_version }})"
+          body: |
+            Host requirements:
+            Kernel >= 5.10
+            Glibc >= 2.39
+
+            Target limits:
+            Minimum Kernel: 6.12.0
+            Glibc: 2.39
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ==========================================
+  # 2. 编译任务：精确匹配 16 种 64 位构建组合
+  # ==========================================
+  build-gcc:
+    needs: create-release
+    # 修改点：当 host 为 arm64 或 riscv64 时，均使用 ubuntu-26.04-arm 运行器编译
+    runs-on: ${{ (matrix.host == 'arm64' || matrix.host == 'riscv64') && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- x64 架构机：编译 64 位全目标交叉/原生工具链 ---
+          - host: x64
+            target: x64
+          - host: x64
+            target: arm64
+          - host: x64
+            target: riscv64
+          - host: x64
+            target: loong64
+          - host: x64
+            target: ppc64le
+          - host: x64
+            target: s390x
+
+          # --- arm64 架构机：编译 64 位全目标交叉/原生工具链 ---
+          - host: arm64
+            target: x64
+          - host: arm64
+            target: arm64
+          - host: arm64
+            target: riscv64
+          - host: arm64
+            target: loong64
+          - host: arm64
+            target: ppc64le
+          - host: arm64
+            target: s390x
+
+          # --- 其他架构机：仅编译各自 64 位原生工具链 ---
+          - host: riscv64
+            target: riscv64
+          - host: loong64
+            target: loong64
+          - host: ppc64le
+            target: ppc64le
+          - host: s390x
+            target: s390x
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ gperf bison flex texinfo help2man make \
+            libncurses-dev python3-dev autoconf automake libtool libtool-bin \
+            gawk wget bzip2 xz-utils unzip rsync git curl check zip
+
+      - name: Map Toolchain Variables
+        run: |
+          case "${{ matrix.host }}" in
+            x64)     HOST_SAMPLE="x86_64-unknown-linux-gnu";     HOST_TRIPLET="x86_64-linux-gnu" ;;
+            arm64)   HOST_SAMPLE="aarch64-unknown-linux-gnu";   HOST_TRIPLET="aarch64-linux-gnu" ;;
+            riscv64) HOST_SAMPLE="riscv64-unknown-linux-gnu";   HOST_TRIPLET="riscv64-linux-gnu" ;;
+            loong64) HOST_SAMPLE="loongarch64-unknown-linux-gnu"; HOST_TRIPLET="loongarch64-linux-gnu" ;;
+            ppc64le) HOST_SAMPLE="powerpc64le-unknown-linux-gnu"; HOST_TRIPLET="powerpc64le-linux-gnu" ;;
+            s390x)   HOST_SAMPLE="s390x-unknown-linux-gnu";     HOST_TRIPLET="s390x-linux-gnu" ;;
+          esac
+
+          case "${{ matrix.target }}" in
+            x64)     TARGET_SAMPLE="x86_64-unknown-linux-gnu" ;;
+            arm64)   TARGET_SAMPLE="aarch64-unknown-linux-gnu" ;;
+            riscv64) TARGET_SAMPLE="riscv64-unknown-linux-gnu" ;;
+            loong64) TARGET_SAMPLE="loongarch64-unknown-linux-gnu" ;;
+            ppc64le) TARGET_SAMPLE="powerpc64le-unknown-linux-gnu" ;;
+            s390x)   TARGET_SAMPLE="s390x-unknown-linux-gnu" ;;
+          esac
+
+          echo "HOST_SAMPLE=$HOST_SAMPLE" >> $GITHUB_ENV
+          echo "HOST_TRIPLET=$HOST_TRIPLET" >> $GITHUB_ENV
+          echo "TARGET_SAMPLE=$TARGET_SAMPLE" >> $GITHUB_ENV
+
+      - name: Install Host Cross Compiler (for Canadian Cross)
+        run: |
+          BUILD_ARCH=$(uname -m)
+          NEED_CROSS=false
+          if [ "$BUILD_ARCH" = "x86_64" ] && [ "${{ matrix.host }}" != "x64" ]; then
+              NEED_CROSS=true
+          elif [ "$BUILD_ARCH" = "aarch64" ] && [ "${{ matrix.host }}" != "arm64" ]; then
+              NEED_CROSS=true
+          fi
+
+          if [ "$NEED_CROSS" = "true" ]; then
+              case "${{ matrix.host }}" in
+                  x64)     PKG="gcc-x86-64-linux-gnu g++-x86-64-linux-gnu" ;;
+                  arm64)   PKG="gcc-aarch64-linux-gnu g++-aarch64-linux-gnu" ;;
+                  riscv64) PKG="gcc-riscv64-linux-gnu g++-riscv64-linux-gnu" ;;
+                  loong64) PKG="gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu" ;;
+                  ppc64le) PKG="gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu" ;;
+                  s390x)   PKG="gcc-s390x-linux-gnu g++-s390x-linux-gnu" ;;
+              esac
+              sudo apt-get update
+              sudo apt-get install -y $PKG
+          fi
+
+      - name: Cache crosstool-NG sources
+        uses: actions/cache@v6
+        with:
+          path: src
+          key: ct-ng-src-cache-${{ matrix.host }}-to-${{ matrix.target }}
+
+      - name: Build and Install crosstool-NG
+        run: |
+          git clone --depth 1 https://github.com/crosstool-ng/crosstool-ng.git
+          cd crosstool-ng
+          ./bootstrap
+          ./configure --prefix=$HOME/ct-ng-install
+          make -j$(nproc)
+          make install
+          echo "$HOME/ct-ng-install/bin" >> $GITHUB_PATH
+
+      - name: Configure Toolchain
+        run: |
+          mkdir build-target && cd build-target
+          ct-ng $TARGET_SAMPLE
+          
+          sed -i 's/^CT_LIBC_GLIBC_V_/# CT_LIBC_GLIBC_V_/' .config
+          sed -i 's/.*CT_LIBC_GLIBC_V_2_39.*/CT_LIBC_GLIBC_V_2_39=y/' .config
+          
+          sed -i 's/^CT_CC_GCC_V_/# CT_CC_GCC_V_/' .config
+          sed -i 's/.*CT_CC_GCC_V_14.*/CT_CC_GCC_V_14=y/' .config
+          
+          sed -i '/CT_LINUX_MIN_VERSION/d' .config
+          echo 'CT_LINUX_MIN_VERSION="6.12.0"' >> .config
+          
+          sed -i '/CT_LIBC_GLIBC_MIN_KERNEL/d' .config
+          echo 'CT_LIBC_GLIBC_MIN_KERNEL="6.12.0"' >> .config
+          
+          sed -i '/CT_PARALLEL_JOBS/d' .config
+          echo "CT_PARALLEL_JOBS=$(nproc)" >> .config
+
+          BUILD_ARCH=$(uname -m)
+          IS_CANADIAN=false
+          if [ "$BUILD_ARCH" = "x86_64" ] && [ "${{ matrix.host }}" != "x64" ]; then
+              IS_CANADIAN=true
+          elif [ "$BUILD_ARCH" = "aarch64" ] && [ "${{ matrix.host }}" != "arm64" ]; then
+              IS_CANADIAN=true
+          fi
+
+          if [ "$IS_CANADIAN" = "true" ]; then
+              sed -i '/CT_CANADIAN/d' .config
+              sed -i '/CT_HOST/d' .config
+              echo "CT_CANADIAN=y" >> .config
+              echo "CT_HOST=\"$HOST_TRIPLET\"" >> .config
+          fi
+
+          yes "" | ct-ng oldconfig
+
+      - name: Build Toolchain
+        run: |
+          cd build-target
+          ct-ng build
+
+      - name: Package Toolchain to ZIP
+        run: |
+          cd $HOME/x-tools
+          TARGET_DIR=$(ls -d * | head -n 1)
+          zip -r $GITHUB_WORKSPACE/gcc-${{ matrix.host }}-to-${{ matrix.target }}.zip $TARGET_DIR
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ github.workspace }}/gcc-${{ matrix.host }}-to-${{ matrix.target }}.zip
+          tag_name: ${{ github.event.inputs.release_version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
