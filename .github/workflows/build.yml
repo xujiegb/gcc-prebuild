@@ -40,7 +40,7 @@ jobs:
   build-gcc:
     needs: create-release
     timeout-minutes: 720
-    # 修改点：针对 riscv64 使用 ubuntu-24.04-riscv 原生运行器，arm64 使用 ubuntu-26.04-arm，其余架构使用标准 ubuntu-26.04
+    # 保持原样：针对 riscv64 依旧使用标准 ubuntu-26.04 运行器（加拿大交叉编译）
     runs-on: ${{ matrix.host == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
     strategy:
       fail-fast: false
@@ -103,7 +103,7 @@ jobs:
             riscv64) HOST_SAMPLE="riscv64-unknown-linux-gnu";   HOST_TRIPLET="riscv64-linux-gnu" ;;
             loong64) HOST_SAMPLE="loongarch64-unknown-linux-gnu"; HOST_TRIPLET="loongarch64-linux-gnu" ;;
             ppc64le) HOST_SAMPLE="powerpc64le-unknown-linux-gnu"; HOST_TRIPLET="powerpc64le-linux-gnu" ;;
-            s390x)   HOST_SAMPLE="s390x-unknown-linux-gnu";     HOST_TRIPLET="s390x-linux-gnu" ;;
+            s390x)   HOST_SAMPLE="s390x-unknown-linux-gnu";      HOST_TRIPLET="s390x-linux-gnu" ;;
           esac
 
           case "${{ matrix.target }}" in
@@ -175,8 +175,21 @@ jobs:
           sed -i '/CT_LIBC_GLIBC_MIN_KERNEL/d' .config
           echo 'CT_LIBC_GLIBC_MIN_KERNEL="6.12.0"' >> .config
           
+          # ==========================================================
+          # 仅针对 riscv64 to riscv64 修改：少使用一个核心，防止 OOM。
+          # 其他所有编译组合依然保持满核（nproc）运行。
+          # ==========================================================
           sed -i '/CT_PARALLEL_JOBS/d' .config
-          echo "CT_PARALLEL_JOBS=$(nproc)" >> .config
+          if [ "${{ matrix.host }}" = "riscv64" ] && [ "${{ matrix.target }}" = "riscv64" ]; then
+              JOBS=$(( $(nproc) - 1 ))
+              # 兜底保护：防止单核 Runner 算出来变成 0
+              if [ $JOBS -lt 1 ]; then JOBS=1; fi
+              echo "检测到 riscv64 to riscv64 编译任务。安全设定并发核心数: $JOBS"
+              echo "CT_PARALLEL_JOBS=$JOBS" >> .config
+          else
+              echo "CT_PARALLEL_JOBS=$(nproc)" >> .config
+          fi
+          # ==========================================================
 
           BUILD_ARCH=$(uname -m)
           IS_CANADIAN=false
