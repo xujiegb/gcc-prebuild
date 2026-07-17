@@ -169,8 +169,8 @@ jobs:
           sed -i 's/^CT_CC_GCC_V_/# CT_CC_GCC_V_/' .config
           sed -i 's/.*CT_CC_GCC_V_14.*/CT_CC_GCC_V_14=y/' .config
           
-          sed -i '/CT_LINUX_MIN_VERSION/d' .config
-          echo 'CT_LINUX_MIN_VERSION="6.12.0"' >> .config
+          sed -i 's/^CT_LINUX_V_/# CT_LINUX_V_/' .config
+          echo 'CT_LINUX_V_6_12=y' >> .config
           
           sed -i '/CT_LIBC_GLIBC_MIN_KERNEL/d' .config
           echo 'CT_LIBC_GLIBC_MIN_KERNEL="6.12.0"' >> .config
